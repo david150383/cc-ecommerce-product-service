@@ -1,0 +1,19 @@
+# Standalone dependencies for working on this service alone.
+name: ecommerce-product-service
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: product_svc
+      POSTGRES_PASSWORD: product_local_pw
+      POSTGRES_DB: product_db
+    ports: ["5442:5432"]
+    volumes: ["product-pg:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U product_svc -d product_db"]
+      interval: 5s
+      retries: 20
+
+volumes:
+  product-pg:

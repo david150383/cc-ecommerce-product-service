@@ -1,0 +1,42 @@
+[project]
+name = "ecommerce-product-service"
+version = "0.1.0"
+description = "Catalog, categories, variants and pricing for the e-commerce platform."
+requires-python = ">=3.14"
+dependencies = [
+  "fastapi>=0.143,<1",
+  "uvicorn[standard]>=0.38",
+  "pydantic>=2.12,<3",
+  "pydantic-settings>=2.11,<3",
+  "structlog>=25.4",
+  # Phase 2: "sqlalchemy[asyncio]>=2.0,<3", "alembic>=1.16", "psycopg[binary]>=3.2"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4",
+  "httpx2>=2.13",
+  "ruff>=0.14",
+]
+
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "ASYNC"]
+ignore = ["S104"]  # binding 0.0.0.0 is intended inside the container
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
