@@ -28,6 +28,15 @@ class TestAuthorization:
         assert client.post("/internal/v1/products/price-lookup", json=body, headers=admin_headers).status_code == 403
         assert client.post("/internal/v1/products/price-lookup", json=body, headers=service_headers).status_code == 200
 
+    def test_service_tokens_for_another_service_are_rejected(self, client, make_token):
+        token = make_token(["service"], audience="ecommerce-inventory-service")
+        res = client.post(
+            "/internal/v1/products/price-lookup",
+            json={"skus": ["ANY-SKU"]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 401
+
     @pytest.mark.parametrize(
         "token_kwargs",
         [

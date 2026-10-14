@@ -81,7 +81,7 @@ def signing_key() -> rsa.RSAPrivateKey:
 def verifier(signing_key: rsa.RSAPrivateKey) -> TokenVerifier:
     public_jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(signing_key.public_key()))
     jwks = {"keys": [{**public_jwk, "kid": KID, "alg": "RS256", "use": "sig"}]}
-    return TokenVerifier(StaticKeyResolver(jwks), ISSUER, AUDIENCE)
+    return TokenVerifier(StaticKeyResolver(jwks), ISSUER, [AUDIENCE, "ecommerce-product-service"])
 
 
 TokenFactory = Callable[..., str]
@@ -120,7 +120,9 @@ def customer_headers(make_token: TokenFactory) -> dict[str, str]:
 
 @pytest.fixture
 def service_headers(make_token: TokenFactory) -> dict[str, str]:
-    return {"Authorization": f"Bearer {make_token(['service'], sub='ecommerce-order-service')}"}
+    # Service tokens are addressed to the target service, like Auth's client-credentials grant.
+    token = make_token(["service"], sub="ecommerce-order-service", audience="ecommerce-product-service")
+    return {"Authorization": f"Bearer {token}"}
 
 
 # ------------------------------------------------------------------ app

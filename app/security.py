@@ -46,13 +46,13 @@ class StaticKeyResolver:
 
 
 class TokenVerifier:
-    def __init__(self, resolver: SigningKeyResolver, issuer: str, audience: str) -> None:
+    def __init__(self, resolver: SigningKeyResolver, issuer: str, audience: str | list[str]) -> None:
         self._resolver = resolver
         self._issuer = issuer
         self._audience = audience
 
     @classmethod
-    def from_jwks_url(cls, url: str, issuer: str, audience: str) -> TokenVerifier:
+    def from_jwks_url(cls, url: str, issuer: str, audience: str | list[str]) -> TokenVerifier:
         return cls(PyJWKClient(url, cache_keys=True, lifespan=600, timeout=5), issuer, audience)
 
     def verify(self, token: str) -> Principal:

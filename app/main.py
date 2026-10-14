@@ -66,7 +66,10 @@ def create_app(
     ]
     app.state.session_factory = session_factory(engine)
     app.state.token_verifier = token_verifier or TokenVerifier.from_jwks_url(
-        settings.jwks_url, settings.jwt_issuer, settings.jwt_audience
+        # Accept user tokens (shared audience) and service tokens minted for this service only.
+        settings.jwks_url,
+        settings.jwt_issuer,
+        [settings.jwt_audience, settings.jwt_service_audience],
     )
 
     # Starlette runs middleware in reverse order of registration: RequestContext runs first.

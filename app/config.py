@@ -21,7 +21,8 @@ class Settings(BaseSettings):
     # Token verification (tokens are issued by ecommerce-auth-service).
     jwks_url: str = "http://localhost:4001/.well-known/jwks.json"
     jwt_issuer: str = "ecommerce-auth-service"
-    jwt_audience: str = "ecommerce-api"
+    jwt_audience: str = "ecommerce-api"  # user tokens
+    jwt_service_audience: str = "ecommerce-product-service"  # service tokens addressed to THIS service
 
     @field_validator("cors_allowed_origins", mode="before")
     @classmethod
