@@ -20,9 +20,12 @@ _CODE_BY_STATUS = {
 
 
 class ProblemError(Exception):
-    def __init__(self, status: int, code: str, title: str, detail: str | None = None) -> None:
+    def __init__(
+        self, status: int, code: str, title: str, detail: str | None = None, extra: dict | None = None
+    ) -> None:
         super().__init__(title)
         self.status, self.code, self.title, self.detail = status, code, title, detail
+        self.extra = extra or {}
 
 
 def problem_response(
@@ -32,6 +35,8 @@ def problem_response(
     title: str,
     detail: str | None = None,
     errors: list[dict[str, str]] | None = None,
+    extra: dict | None = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     body: dict[str, object] = {
         "type": f"https://errors.ecommerce.local/{code.lower().replace('_', '-')}",
@@ -45,17 +50,22 @@ def problem_response(
         body["detail"] = detail
     if errors is not None:
         body["errors"] = errors
-    return JSONResponse(body, status_code=status, media_type="application/problem+json")
+    if extra:
+        body.update(extra)
+    return JSONResponse(body, status_code=status, media_type="application/problem+json", headers=headers)
 
 
 def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ProblemError)
     async def _problem(request: Request, exc: ProblemError) -> JSONResponse:
-        return problem_response(request, exc.status, exc.code, exc.title, exc.detail)
+        headers = {"WWW-Authenticate": 'Bearer realm="ecommerce"'} if exc.status == 401 else None
+        return problem_response(request, exc.status, exc.code, exc.title, exc.detail, extra=exc.extra, headers=headers)
 
     @app.exception_handler(StarletteHTTPException)
     async def _http(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         code = _CODE_BY_STATUS.get(exc.status_code, "INTERNAL_ERROR" if exc.status_code >= 500 else "BAD_REQUEST")
+        if exc.status_code == 412:
+            code = "VERSION_MISMATCH"
         title = "Resource not found" if exc.status_code == 404 else str(exc.detail)
         return problem_response(request, exc.status_code, code, title)
 

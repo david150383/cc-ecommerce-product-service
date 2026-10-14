@@ -1,11 +1,11 @@
 import re
 
+import pytest
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
-from app.config import Settings
 from app.health import ReadinessCheck
-from tests.conftest import make_client
+from tests.conftest import make_settings
 
 
 async def _ok() -> None:
@@ -22,16 +22,16 @@ def test_live(client: TestClient) -> None:
     assert res.json() == {"status": "ok"}
 
 
-def test_ready_when_checks_pass() -> None:
-    res = make_client([ReadinessCheck("database", _ok)]).get("/health/ready")
+def test_ready_when_checks_pass(make_client) -> None:
+    res = make_client([ReadinessCheck("broker", _ok)]).get("/health/ready")
     assert res.status_code == 200
-    assert res.json() == {"status": "ready", "checks": {"accepting-traffic": "ok", "database": "ok"}}
+    assert res.json() == {"status": "ready", "checks": {"accepting-traffic": "ok", "database": "ok", "broker": "ok"}}
 
 
-def test_not_ready_when_a_check_fails() -> None:
-    res = make_client([ReadinessCheck("database", _fail)]).get("/health/ready")
+def test_not_ready_when_a_check_fails(make_client) -> None:
+    res = make_client([ReadinessCheck("broker", _fail)]).get("/health/ready")
     assert res.status_code == 503
-    assert res.json()["checks"]["database"] == "failed"
+    assert res.json()["checks"]["broker"] == "failed"
 
 
 def test_correlation_id_is_echoed_when_valid(client: TestClient) -> None:
@@ -55,7 +55,8 @@ def test_unknown_route_is_problem_json(client: TestClient) -> None:
     assert body["correlationId"] == res.headers["x-correlation-id"]
 
 
-def _client_with_echo_route() -> TestClient:
+@pytest.fixture
+def echo_client(engine, verifier) -> TestClient:
     from pydantic import BaseModel, Field
 
     class Item(BaseModel):
@@ -74,27 +75,27 @@ def _client_with_echo_route() -> TestClient:
 
     from app.main import create_app
 
-    app = create_app(Settings(NODE_ENV="test", log_level="critical"))
+    app = create_app(make_settings(), engine=engine, token_verifier=verifier)
     app.include_router(router)
     return TestClient(app, raise_server_exceptions=False)
 
 
-def test_malformed_json_is_400() -> None:
-    res = _client_with_echo_route().post("/echo", content='{"broken":', headers={"content-type": "application/json"})
+def test_malformed_json_is_400(echo_client: TestClient) -> None:
+    res = echo_client.post("/echo", content='{"broken":', headers={"content-type": "application/json"})
     assert res.status_code == 400
     assert res.json()["code"] == "MALFORMED_JSON"
 
 
-def test_validation_errors_list_fields() -> None:
-    res = _client_with_echo_route().post("/echo", json={"name": "", "price_minor": -1})
+def test_validation_errors_list_fields(echo_client: TestClient) -> None:
+    res = echo_client.post("/echo", json={"name": "", "price_minor": -1})
     assert res.status_code == 400
     body = res.json()
     assert body["code"] == "VALIDATION_FAILED"
     assert {e["path"] for e in body["errors"]} == {"name", "price_minor"}
 
 
-def test_unhandled_errors_do_not_leak_details() -> None:
-    res = _client_with_echo_route().get("/boom")
+def test_unhandled_errors_do_not_leak_details(echo_client: TestClient) -> None:
+    res = echo_client.get("/boom")
     assert res.status_code == 500
     assert res.json()["code"] == "INTERNAL_ERROR"
     assert "secret internal detail" not in res.text
@@ -120,5 +121,5 @@ def test_openapi_is_generated(client: TestClient) -> None:
 
 
 def test_settings_parse_comma_separated_origins() -> None:
-    settings = Settings(NODE_ENV="test", cors_allowed_origins="https://a.example, https://b.example")
+    settings = make_settings(cors_allowed_origins="https://a.example, https://b.example")
     assert settings.cors_allowed_origins == ["https://a.example", "https://b.example"]

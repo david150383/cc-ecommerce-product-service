@@ -4,6 +4,7 @@ __pycache__
 .pytest_cache
 .ruff_cache
 tests
+alembic/versions/__pycache__
 docs
 .env
 .env.*

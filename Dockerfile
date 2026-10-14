@@ -1,4 +1,4 @@
-FROM python:3.14-slim AS runtime
+FROM python:3.14-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -16,6 +16,16 @@ COPY app ./app
 RUN pip install --no-deps . \
  && useradd --system --uid 10001 --no-create-home app
 
+# ---- migrate: one-off job that applies Alembic migrations, then exits ----
+# Run before rolling out a new version; never at app startup (replicas would race).
+FROM base AS migrate
+COPY alembic.ini ./
+COPY alembic ./alembic
+USER app
+CMD ["alembic", "upgrade", "head"]
+
+# ---- runtime ----
+FROM base AS runtime
 USER app
 EXPOSE 4002
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s \

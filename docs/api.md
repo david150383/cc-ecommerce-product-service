@@ -1,71 +1,127 @@
 # Product Service API (v1)
 
 Base URL (local): `http://localhost:4002`. Conventions: `ecommerce-infrastructure/docs/architecture/conventions.md`.
-Generated OpenAPI: `GET /openapi.json`, Swagger UI at `/docs`. Both are produced by FastAPI from the
-Pydantic schemas, so they cannot drift from the code.
-Status: **documented, not yet implemented** (Phase 2). Implemented today: health, OpenAPI shell.
+
+**Machine-readable spec:** `GET /openapi.json` (Swagger UI at `/docs`). FastAPI generates it from the
+same Pydantic models that validate requests, so it cannot drift from the code.
+
+Status: **implemented** (Phase 2).
 
 ## Endpoints
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/api/v1/products` | public | Search, filter, sort, paginate **published** products |
-| GET | `/api/v1/products/{id}` | public | Product detail (by UUID). `/api/v1/products/by-slug/{slug}` for SEO URLs |
-| POST | `/api/v1/products` | admin | Create product (+ variants, images, specs) |
-| PATCH | `/api/v1/products/{id}` | admin | Partial update; `If-Match: <version>` for optimistic locking |
-| DELETE | `/api/v1/products/{id}` | admin | Soft delete (archived). Order snapshots are unaffected |
-| GET | `/api/v1/categories` | public | Category tree (parent/children) |
-| GET | `/api/v1/categories/{id}/products` | public | Products in a category (includes subcategories) |
-| POST/PATCH/DELETE | `/api/v1/categories[/{id}]` | admin | Category management |
-| POST | `/internal/v1/products/price-lookup` | service token | Batch SKU → name, productId, current price (used by Order Service) |
+| GET | `/api/v1/products` | public (admin: `status` filter) | Search, filter, sort, paginate |
+| GET | `/api/v1/products/{id}` | public (admin sees drafts) | Product detail, `ETag` header |
+| GET | `/api/v1/products/by-slug/{slug}` | public | Same, by SEO slug |
+| POST | `/api/v1/products` | admin | Create with variants, images, specifications |
+| PATCH | `/api/v1/products/{id}` | admin | Partial update; optional `If-Match` (optimistic locking) |
+| DELETE | `/api/v1/products/{id}` | admin | Archive (soft delete), idempotent |
+| POST | `/api/v1/products/{id}/variants` | admin | Add a variant (SKU) |
+| PATCH | `/api/v1/products/{id}/variants/{variantId}` | admin | Reprice, set/clear sale, (de)activate. SKU is immutable |
+| GET | `/api/v1/categories` | public | Category tree |
+| GET | `/api/v1/categories/{id}/products` | public | Products in the category **and all subcategories** |
+| POST | `/api/v1/categories` | admin | Create |
+| PATCH | `/api/v1/categories/{id}` | admin | Update or move (cycles rejected) |
+| DELETE | `/api/v1/categories/{id}` | admin | Delete; only if empty |
+| POST | `/internal/v1/products/price-lookup` | service token | Current purchasable price per SKU (Order Service) |
+
+Authentication: `Authorization: Bearer <access token from ecommerce-auth-service>`. Tokens are verified
+locally against Auth's JWKS (cached 10 minutes). A *present but invalid* token is rejected with 401 even
+on public endpoints, so a broken client fails loudly instead of silently browsing anonymously.
 
 ## GET /api/v1/products
 
-Query parameters:
-
 | Param | Example | Notes |
 |---|---|---|
-| `q` | `black tee` | Full-text search (PostgreSQL `tsvector` over name, description, brand) |
-| `category` | `uuid` | Includes subcategories |
-| `minPrice`, `maxPrice` | `10000` | Integer minor units, compared against the *effective* price |
-| `inStock` | `true` | Not available here. The frontend asks Inventory, because Product does not own stock |
+| `q` | `running shoes` | PostgreSQL full-text search (`websearch_to_tsquery`, English stemming). Name ranks above brand above description |
+| `category` | `uuid` | Includes all subcategories (recursive CTE) |
+| `minPrice`, `maxPrice` | `10000` | Integer minor units, compared with the **lowest effective price** |
 | `featured` | `true` | |
-| `sort` | `price_asc`, `price_desc`, `newest`, `relevance` | |
+| `sort` | `relevance` (needs `q`), `newest` (default without `q`), `price_asc`, `price_desc`, `name` | `id` is always the final tie-breaker, so pages are stable |
 | `page`, `pageSize` | `1`, `24` | `pageSize` ≤ 100 |
+| `status` | `DRAFT` | **Admins only** (403 otherwise). Public callers always get `PUBLISHED` |
 
 ```json
 {
   "data": [{
-    "id": "uuid", "slug": "classic-tee", "name": "Classic Tee", "brand": "Acme",
-    "category": { "id": "uuid", "name": "T-Shirts" },
-    "price": { "amountMinor": 59900, "currency": "INR" },
-    "salePrice": { "amountMinor": 49900, "currency": "INR" },
-    "effectivePrice": { "amountMinor": 49900, "currency": "INR" },
-    "primaryImage": { "url": "https://...", "alt": "Black tee front" },
-    "featured": true
+    "id": "uuid", "slug": "classic-cotton-tee", "name": "Classic Cotton Tee", "brand": "Acme",
+    "category": { "id": "uuid", "name": "T-Shirts", "slug": "t-shirts" },
+    "lowestPrice": { "amountMinor": 59900, "currency": "INR" },
+    "onSale": false, "featured": true, "status": "PUBLISHED",
+    "primaryImage": { "url": "https://…", "alt": "Classic Cotton Tee" }
   }],
-  "page": { "page": 1, "pageSize": 24, "total": 132 }
+  "page": { "page": 1, "pageSize": 24, "total": 5 }
 }
 ```
+
+`inStock` is deliberately **not** a filter here: Product does not own stock. The frontend asks
+Inventory for availability.
+
+## Prices
+
+Each **variant** has `price` and an optional `salePrice` with an optional `[saleStartsAt, saleEndsAt)`
+window.
+
+- `effectivePrice` = `salePrice` while inside the window, otherwise `price`. One rule is implemented
+  twice: in SQL (`app/pricing.py: sql_effective_price`, used for filtering and sorting) and in Python
+  (used for responses). A test runs both against the same rows to prove they agree.
+- A listing's `lowestPrice` is the minimum effective price over **active** variants. Products with no
+  active variant never appear in listings.
+- Invariants enforced in the database: `price ≥ 0`, `salePrice < price`, `saleStartsAt < saleEndsAt`,
+  ISO currency, one currency per product (API). Timestamps must carry a timezone.
 
 ## Product model
 
 ```
-Product: id, slug (unique), name, description (sanitized Markdown), brand, category_id,
-         status: DRAFT | PUBLISHED | ARCHIVED, featured, version, created_at, updated_at
-Variant: id, product_id, sku (unique, ^[A-Z0-9][A-Z0-9-]{2,63}$), attributes {color, size},
-         price_minor BIGINT, sale_price_minor BIGINT NULL, sale_starts_at, sale_ends_at, currency
-Image:   id, product_id, variant_id NULL, url, alt, position
-Spec:    product_id, name, value, position
+Category: id, parent_id, name, slug (unique), description, position
+Product:  id, slug (unique), name, description (Markdown, rendered without raw HTML by the frontend),
+          brand, category_id, status DRAFT | PUBLISHED | ARCHIVED, featured, published_at, version,
+          search_vector (GENERATED tsvector, GIN index)
+Variant:  id, product_id, sku (unique, ^[A-Z0-9][A-Z0-9-]{2,63}$, immutable), name, attributes (JSONB),
+          price_minor, sale_price_minor, sale_starts_at, sale_ends_at, currency, is_active, position
+Image:    product_id, url (http/https), alt, position
+Spec:     product_id, name, value, position
 ```
 
-- Prices are per **variant** (the thing with a SKU). The product-level price shown in listings is
-  the lowest effective variant price.
-- `effectivePrice` = sale price if inside the sale window, else price. It is computed on the
-  server so every client agrees.
-- Only `PUBLISHED` products are visible to the public. Admins see all statuses.
+- **Variants are never deleted**, only deactivated: Inventory and every past order reference their SKUs.
+- **Publishing** requires at least one active variant (`409 PRODUCT_NOT_PUBLISHABLE`), and the last
+  active variant of a published product cannot be deactivated.
+- **Archiving** (`DELETE`) hides the product from the public. Admins can still read it.
+
+## Optimistic locking
+
+`GET` returns `ETag: "<version>"`. Send it back as `If-Match` on `PATCH`. If someone saved in between,
+you get `412 VERSION_MISMATCH` instead of silently overwriting their change. Without `If-Match`, the
+last write wins (convenient for scripts), but the version check still guards the actual UPDATE
+(`version_id_col`), so two truly simultaneous writes cannot both succeed.
+
+## POST /internal/v1/products/price-lookup
+
+```json
+// request (service token; max 100 SKUs)
+{ "skus": ["TEE-CLASSIC-BLK-M", "NOPE-1"] }
+// 200
+{ "items": [{ "sku": "TEE-CLASSIC-BLK-M", "productId": "uuid", "variantId": "uuid",
+              "name": "Classic Cotton Tee, Black, M",
+              "unitPrice": { "amountMinor": 59900, "currency": "INR" } }],
+  "unavailable": ["NOPE-1"] }
+```
+
+Only **active variants of published products** are purchasable. `unitPrice` is the effective price at
+the moment of the call; the Order Service snapshots it.
 
 ## Errors
 
-`400 VALIDATION_FAILED`, `404 NOT_FOUND`, `409 SLUG_TAKEN` / `SKU_TAKEN`,
-`412 VERSION_MISMATCH` (stale `If-Match`), `401`/`403` for admin routes.
+| Status | Code | When |
+|---|---|---|
+| 400 | `VALIDATION_FAILED`, `MALFORMED_JSON` | Bad input (unknown fields rejected) |
+| 401 / 403 | `UNAUTHENTICATED` / `FORBIDDEN` | Missing/invalid token / wrong role |
+| 404 | `NOT_FOUND` | Unknown, or not visible to you |
+| 409 | `SLUG_TAKEN`, `SKU_TAKEN`, `CATEGORY_CYCLE`, `CATEGORY_NOT_EMPTY`, `PRODUCT_NOT_PUBLISHABLE` | Conflicts |
+| 412 | `VERSION_MISMATCH` | Stale `If-Match` |
+| 422 | `CATEGORY_NOT_FOUND`, `CURRENCY_MISMATCH`, `INVALID_PRICING` | Semantically invalid |
+| 503 | `DEPENDENCY_UNAVAILABLE` | Auth's JWKS unreachable and no cached key |
+
+Uniqueness and foreign keys are enforced by the database. Violations are mapped to these codes by
+constraint **name**, which is why every constraint has a deterministic name (`app/models.py`).
