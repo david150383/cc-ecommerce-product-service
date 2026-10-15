@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from tests.conftest import variant
 
@@ -115,6 +116,22 @@ class TestListing:
     def test_search_uses_stemming(self, client, create_product):
         create_product("Hiking Boots")
         assert client.get("/api/v1/products", params={"q": "boot"}).json()["page"]["total"] == 1
+
+    def test_search_tolerates_typos_and_word_starts_but_not_unrelated_words(self, client, create_product):
+        create_product("Classic Cotton Tee")
+        create_product("Trail Running Shoes")
+        names = lambda q: [p["name"] for p in client.get("/api/v1/products", params={"q": q}).json()["data"]]  # noqa: E731
+        assert names("cotten") == ["Classic Cotton Tee"]  # typo
+        assert names("cott") == ["Classic Cotton Tee"]  # word start
+        assert names("runing") == ["Trail Running Shoes"]
+        assert names("jeans") == []
+
+    def test_fuzzy_name_search_can_use_the_trigram_index(self, engine):
+        # Tiny test tables are always seq-scanned; forbid that to show the index CAN serve the query.
+        with engine.begin() as conn:
+            conn.execute(text("SET LOCAL enable_seqscan = off"))
+            plan = "\n".join(r[0] for r in conn.execute(text("EXPLAIN SELECT id FROM products WHERE 'cotten' <% name")))
+        assert "ix_products_name_trgm" in plan
 
     def test_price_filters_and_sorts_use_the_effective_price(self, client, create_product):
         create_product("Cheap", variants=[variant("CHEAP-1", 1000)])

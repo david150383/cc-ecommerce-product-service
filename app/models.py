@@ -87,6 +87,8 @@ class Product(Timestamps, Base):
         # A published product must have been published at some point in time.
         CheckConstraint("status <> 'PUBLISHED' OR published_at IS NOT NULL", name="published_has_timestamp"),
         Index("ix_products_search_vector", "search_vector", postgresql_using="gin"),
+        # Typo- and prefix-tolerant name matching (pg_trgm word similarity), next to full-text search.
+        Index("ix_products_name_trgm", "name", postgresql_using="gin", postgresql_ops={"name": "gin_trgm_ops"}),
         Index("ix_products_status_created", "status", "created_at"),
     )
 

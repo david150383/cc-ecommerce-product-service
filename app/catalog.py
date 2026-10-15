@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
-from sqlalchemy import Select, and_, func, select
+from sqlalchemy import Select, and_, func, literal, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.orm.exc import StaleDataError
@@ -162,6 +162,9 @@ def delete_category(session: Session, category_id: uuid.UUID) -> None:
 # ============================================================================ product reads
 
 
+WORD_SIMILARITY_THRESHOLD = 0.5
+
+
 @dataclass(frozen=True)
 class ListFilters:
     q: str | None = None
@@ -194,8 +197,13 @@ def list_products(session: Session, f: ListFilters) -> tuple[list[ProductSummary
     rank = None
     if f.q:
         query = func.websearch_to_tsquery("english", f.q)
-        conditions.append(Product.search_vector.op("@@")(query))
-        rank = func.ts_rank(Product.search_vector, query)
+        # Full text (stemming, weights) OR a fuzzy match on the name, so typos ("cotten") and word starts
+        # ("cott") still find products. `<%` is pg_trgm word similarity, served by ix_products_name_trgm;
+        # its threshold (default 0.6) is lowered for this transaction only: 0.5 still rejects unrelated
+        # words (they score ~0) but accepts one-letter typos.
+        session.execute(text(f"SET LOCAL pg_trgm.word_similarity_threshold = {WORD_SIMILARITY_THRESHOLD}"))
+        conditions.append(or_(Product.search_vector.op("@@")(query), literal(f.q).op("<%")(Product.name)))
+        rank = func.ts_rank(Product.search_vector, query) + func.word_similarity(literal(f.q), Product.name)
     if f.category_id is not None:
         conditions.append(Product.category_id.in_(_descendant_ids(session, f.category_id)))
     if f.min_price is not None:
